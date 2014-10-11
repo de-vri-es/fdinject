@@ -1,5 +1,3 @@
-#include <iostream>
-
 extern "C" {
 #include <signal.h>
 #include <sys/ptrace.h>
@@ -365,7 +363,6 @@ bool wait_for_syscall(int pid) {
 		case CLD_TRAPPED:
 		case CLD_STOPPED:
 			if (info.si_status == (sigtrap | 0x80)) return true;
-			std::cout << "Received unexpected signal " << info.si_status << ": " << strsignal(info.si_status) << ".\n";
 			return false;
 
 		case CLD_CONTINUED:
