@@ -2,57 +2,42 @@
 #include <sstream>
 #include <vector>
 
+extern "C" {
 #include <sys/mman.h>
+}
 
 #include "dbpp.hpp"
 #include "syscall.hpp"
 
 namespace fdinject {
 
-long mmap(int pid, dbpp::register_t address, std::size_t length, bool read, bool write, bool exec) {
-	return dbpp::syscall(pid, 9, {{
-		address,
-		length,
-		static_cast<unsigned int>(PROT_READ | PROT_WRITE),
-		MAP_PRIVATE | MAP_ANONYMOUS,
-		0,
-		0
-	}});
+#if !defined(__x86_64__)
+static_assert(false, "Unsupported architecture. At the moment, fdinject only support Linux on x86_64.");
+#endif
+
+long mmap(int pid, dbpp::register_t address, std::size_t length, int protection, int flags, int fd, std::size_t offset) {
+	return dbpp::syscall(pid, 9, {{address, length, unsigned(protection), unsigned(flags), unsigned(fd), offset}});
 }
 
 int munmap(int pid, dbpp::register_t address, size_t length) {
-	return dbpp::syscall(pid, 11, {{
-		address,
-		length,
-		0,
-		0,
-		0,
-		0
-	}});
+	return dbpp::syscall(pid, 11, {{address, length, 0, 0, 0, 0}});
 }
 
-int write(int pid, int fd, void const * data, std::size_t length) {
-	std::cout << "Calling write(" << fd << ", " << data << ", " << length << ") in process " << pid << ".\n";
-	return dbpp::syscall(pid, 1, {{
-		static_cast<dbpp::register_t>(fd),
-		reinterpret_cast<dbpp::register_t>(data),
-		length,
-		0, 0, 0
-	}});
+int write(int pid, int fd, dbpp::register_t address, std::size_t length) {
+	return dbpp::syscall(pid, 1, {{unsigned(fd), address, length, 0, 0, 0}});
 }
 
-void dwrite(int pid, int fd, void const * data, std::size_t length) {
+void inject_data(int pid, int fd, void const * data, std::size_t length) {
 	std::cout << "Allocating memory in tracee.\n";
-	long address = mmap(pid, 0, length, true, true, false);
+	long address = mmap(pid, 0, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 	if (address < 0) throw dbpp::error(pid, {int(-address), std::generic_category()}, "Failed to allocate memory in process");
-
 
 	std::cout << "Copying memory to tracee.\n";
 	dbpp::memcpy_to(pid, address, data, length);
 
 	std::size_t written = 0;
 	while (written < length) {
-		int result = write(pid, fd, reinterpret_cast<char const *>(address + written), length - written);
+		int result = write(pid, fd, address + written, length - written);
 		if (result >= 0) {
 			std::cout << "Written " << result << " bytes.\n";
 			written += result;
@@ -89,17 +74,16 @@ int main(int argc, char * * argv) {
 		copy(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>(), std::ostreambuf_iterator<char>(buffer));
 		data = buffer.str();
 	}
-	std::cout << "Writing: `" << data << "'.\n";
-
 	try {
-		std::cout << "Attaching to process " << pid << "\n";
+		std::cout << "Attaching to process.\n";
 		dbpp::attach(pid);
-		std::cout << "Interrupting process " << pid << "\n";
+		std::cout << "Interrupting process.\n";
 		dbpp::kill(pid, dbpp::sigstop);
-		std::cout << "waiting for process " << pid << "\n";
+		std::cout << "waiting for process to halt.\n";
 		dbpp::wait_for_trap(pid);
-		fdinject::dwrite(pid, fd, data.data(), data.size());
-		std::cout << "Detaching from process " << pid << "\n";
+		std::cout << "Starting remote write.\n";
+		fdinject::inject_data(pid, fd, data.data(), data.size());
+		std::cout << "Detaching from process.\n";
 		dbpp::detach(pid);
 	} catch (std::system_error const & e) {
 		std::cout << "Error " << e.code().value() << ": " << e.what() << "\n";
